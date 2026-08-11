@@ -4,16 +4,17 @@ from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework import status
 
-from .services import read_tags, build_query, apply_tags, download_cover_art
+from .services import read_tags, build_query, apply_tags, download_cover_art, parse_filename
 from .musicbrainz import search_recording, search_release
 
 import base64
 import json
 import zipfile
+import re
 
 
 @api_view(["POST"])
-def read_metadata(request):
+def read_metadata(request): 
     file_obj = request.FILES.get("file")
 
     if file_obj is None:
@@ -146,11 +147,22 @@ def auto_search(request):
         )
 
     search_type = request.data.get("search_type", "track")
+    matches = search_release(query) if search_type == "album" else search_recording(query)
 
-    if search_type == "album":
-        matches = search_release(query)
-    else:
-        matches = search_recording(query)
+    if not matches and "(" in query:
+        fallback_query = re.sub(r"\([^)]*\)", "", query).strip()
+        if fallback_query != query:
+            matches = search_recording(fallback_query)
+            if matches:
+                query = fallback_query
+
+    if not matches and not (tags.get("artist") and tags.get("title")):
+        parsed = parse_filename(filename)
+        if parsed["artist"] and parsed["title"]:
+            swapped_query = f'artist:"{parsed["title"]}" AND recording:"{parsed["artist"]}"'
+            matches = search_recording(swapped_query)
+            if matches:
+                query = swapped_query
 
     return Response(
         {
@@ -160,6 +172,7 @@ def auto_search(request):
         },
         status=status.HTTP_200_OK,
     )
+
 
 @api_view(["POST"])
 def batch_auto_search(request):
