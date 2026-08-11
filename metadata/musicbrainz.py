@@ -1,4 +1,5 @@
 import musicbrainzngs
+import requests
 
 musicbrainzngs.set_useragent("music-metadata-fixer", "1.0", "your-email@example.com")
 
@@ -11,18 +12,19 @@ def search_recording(query):
     for rec in recordings:
         artist = rec.get("artist-credit-phrase")
         release = rec.get("release-list", [{}])[0]
+        release_id = release.get("id")
 
         matches.append({
             "mbid": rec.get("id"),
             "title": rec.get("title"),
             "artist": artist,
             "album": release.get("title"),
-            "release_id": release.get("id"),
+            "release_id": release_id,
             "score": rec.get("ext:score"),
+            "cover_art_url": get_cover_art_url(release_id),
         })
 
     return matches
-
 
 def search_release(query):
     result = musicbrainzngs.search_releases(query=query, limit=5)
@@ -40,3 +42,30 @@ def search_release(query):
         })
 
     return matches
+
+
+def get_cover_art_url(release_id):
+    if not release_id:
+        return None
+
+    url = f"https://coverartarchive.org/release/{release_id}"
+
+    try:
+        response = requests.get(url, timeout=5)
+    except requests.RequestException:
+        return None
+
+    if response.status_code != 200:
+        return None
+
+    data = response.json()
+    images = data.get("images", [])
+
+    for image in images:
+        if image.get("front"):
+            return image.get("image")
+
+    if images:
+        return images[0].get("image")
+
+    return None
