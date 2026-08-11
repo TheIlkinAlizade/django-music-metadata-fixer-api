@@ -72,15 +72,17 @@ def build_query(filename=None, artist=None, title=None, album=None, manual_artis
 
 def parse_filename(filename):
     name = re.sub(r"\.\w+$", "", filename)
-    name = re.sub(r"^\d+[\s\-\.]+", "", name)
+    name = re.sub(r"^\d{1,3}[\s\-\.]+", "", name)
+    name = name.strip(" _-")
 
-    if " - " in name:
-        parts = name.split(" - ", 1)
-        artist = parts[0].strip()
-        title = _clean_title_junk(parts[1].strip())
-        return {"artist": artist, "title": title}
+    for separator in [" - ", " _ ", "_"]:
+        if separator in name:
+            parts = name.split(separator, 1)
+            artist = parts[0].strip(" _-")
+            title = _clean_title_junk(parts[1].strip(" _-"))
+            return {"artist": artist, "title": title}
 
-    return {"artist": None, "title": _clean_title_junk(name.strip())}
+    return {"artist": None, "title": _clean_title_junk(name.strip(" _-"))}
 
 
 def _clean_title_junk(title):
@@ -88,12 +90,18 @@ def _clean_title_junk(title):
         r"\(official\s*(video|audio|lyric\s*video|music\s*video)\)",
         r"\[official\s*(video|audio|lyric\s*video|music\s*video)\]",
         r"\(official\)",
+        r"\[official\]",
         r"\(lyrics?\)",
         r"\[lyrics?\]",
         r"\(hd\)",
+        r"\[hd\]",
         r"\(4k\)",
+        r"\[4k\]",
         r"\(audio\)",
+        r"\[audio\]",
         r"\(visualizer\)",
+        r"\[visualizer\]",
+        r"\[.*?\]",
     ]
 
     cleaned = title
