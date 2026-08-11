@@ -7,6 +7,10 @@ from rest_framework import status
 from .services import read_tags, build_query, apply_tags, download_cover_art
 from .musicbrainz import search_recording, search_release
 
+import base64
+import json
+import zipfile
+
 
 @api_view(["POST"])
 def read_metadata(request):
@@ -156,3 +160,334 @@ def auto_search(request):
         },
         status=status.HTTP_200_OK,
     )
+
+@api_view(["POST"])
+def batch_auto_search(request):
+    files = request.FILES.getlist("files")
+
+    if not files:
+        return Response(
+            {"error": "No files provided. Send them as multipart/form-data under the 'files' key (multiple allowed)."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    results = []
+
+    for file_obj in files:
+        filename = file_obj.name
+
+        try:
+            read_result = read_tags(file_obj)
+
+            if read_result is None:
+                results.append({
+                    "filename": filename,
+                    "status": "error",
+                    "error": "Could not read this file. It may be corrupted or an unsupported format.",
+                })
+                continue
+
+            tags = read_result["tags"]
+
+            query = build_query(
+                filename=filename,
+                artist=tags.get("artist"),
+                title=tags.get("title"),
+                album=tags.get("album"),
+            )
+
+            if not query:
+                results.append({
+                    "filename": filename,
+                    "status": "no_query",
+                    "existing_tags": read_result,
+                    "matches": [],
+                })
+                continue
+
+            matches = search_recording(query)
+
+            results.append({
+                "filename": filename,
+                "status": "ok",
+                "existing_tags": read_result,
+                "query_used": query,
+                "matches": matches,
+            })
+
+        except Exception as exc:
+            results.append({
+                "filename": filename,
+                "status": "error",
+                "error": str(exc),
+            })
+
+    return Response({"results": results}, status=status.HTTP_200_OK)
+
+
+
+def sanitize_filename(name):
+    invalid_chars = '<>:"/\\|?*'
+    for ch in invalid_chars:
+        name = name.replace(ch, "")
+    return name.strip()
+
+
+@api_view(["POST"])
+def batch_apply(request):
+    files = request.FILES.getlist("files")
+    metadata_json = request.data.get("metadata")
+
+    if not files:
+        return Response(
+            {"error": "No files provided. Send them as multipart/form-data under the 'files' key (multiple allowed)."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    if not metadata_json:
+        return Response(
+            {"error": "Missing 'metadata' field. Send a JSON array with one entry per file, in the same order."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    try:
+        metadata_list = json.loads(metadata_json)
+    except (json.JSONDecodeError, TypeError):
+        return Response(
+            {"error": "'metadata' must be a valid JSON array."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    if len(metadata_list) != len(files):
+        return Response(
+            {"error": f"Got {len(files)} files but {len(metadata_list)} metadata entries. They must match 1:1, in order."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    zip_buffer = io.BytesIO()
+    errors = []
+
+    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
+        for file_obj, meta in zip(files, metadata_list):
+            original_filename = file_obj.name
+
+            try:
+                title = meta.get("title")
+                artist = meta.get("artist")
+                album = meta.get("album")
+                date = meta.get("date")
+                cover_art_url = meta.get("cover_art_url")
+
+                file_bytes = file_obj.read()
+                buffer = io.BytesIO(file_bytes)
+
+                cover_art_bytes, cover_mime = download_cover_art(cover_art_url)
+
+                result = apply_tags(
+                    buffer,
+                    original_filename,
+                    title=title,
+                    artist=artist,
+                    album=album,
+                    date=date,
+                    cover_art_bytes=cover_art_bytes,
+                    cover_mime=cover_mime,
+                )
+
+                if result is None:
+                    errors.append({"filename": original_filename, "error": "Could not process this file."})
+                    continue
+
+                extension = original_filename.split(".")[-1]
+
+                if artist and title:
+                    new_filename = sanitize_filename(f"{artist} - {title}.{extension}")
+                else:
+                    new_filename = original_filename
+
+                result.seek(0)
+                zip_file.writestr(new_filename, result.read())
+
+            except Exception as exc:
+                errors.append({"filename": original_filename, "error": str(exc)})
+
+    zip_buffer.seek(0)
+
+    response = FileResponse(zip_buffer, as_attachment=True, filename="fixed_music.zip")
+    response["X-Batch-Errors"] = json.dumps(errors)
+    return response
+    files = request.FILES.getlist("files")
+    metadata_json = request.data.get("metadata")
+
+    if not files:
+        return Response(
+            {"error": "No files provided. Send them as multipart/form-data under the 'files' key (multiple allowed)."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    if not metadata_json:
+        return Response(
+            {"error": "Missing 'metadata' field. Send a JSON array with one entry per file, in the same order."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    try:
+        metadata_list = json.loads(metadata_json)
+    except (json.JSONDecodeError, TypeError):
+        return Response(
+            {"error": "'metadata' must be a valid JSON array."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    if len(metadata_list) != len(files):
+        return Response(
+            {"error": f"Got {len(files)} files but {len(metadata_list)} metadata entries. They must match 1:1, in order."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    results = []
+
+    for file_obj, meta in zip(files, metadata_list):
+        filename = file_obj.name
+
+        try:
+            title = meta.get("title")
+            artist = meta.get("artist")
+            album = meta.get("album")
+            date = meta.get("date")
+            cover_art_url = meta.get("cover_art_url")
+
+            file_bytes = file_obj.read()
+            buffer = io.BytesIO(file_bytes)
+
+            cover_art_bytes, cover_mime = download_cover_art(cover_art_url)
+
+            result = apply_tags(
+                buffer,
+                filename,
+                title=title,
+                artist=artist,
+                album=album,
+                date=date,
+                cover_art_bytes=cover_art_bytes,
+                cover_mime=cover_mime,
+            )
+
+            if result is None:
+                results.append({
+                    "filename": filename,
+                    "status": "error",
+                    "error": "Could not process this file. It may be corrupted or an unsupported format.",
+                })
+                continue
+
+            result.seek(0)
+            encoded = base64.b64encode(result.read()).decode("utf-8")
+
+            results.append({
+                "filename": filename,
+                "status": "ok",
+                "file_base64": encoded,
+            })
+
+        except Exception as exc:
+            results.append({
+                "filename": filename,
+                "status": "error",
+                "error": str(exc),
+            })
+
+    return Response({"results": results}, status=status.HTTP_200_OK)
+
+
+
+@api_view(["POST"])
+def batch_auto_fix(request):
+    files = request.FILES.getlist("files")
+
+    if not files:
+        return Response(
+            {"error": "No files provided. Send them as multipart/form-data under the 'files' key (multiple allowed)."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    zip_buffer = io.BytesIO()
+    errors = []
+    skipped = []
+
+    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
+        for file_obj in files:
+            original_filename = file_obj.name
+
+            try:
+                read_result = read_tags(file_obj)
+
+                if read_result is None:
+                    errors.append({"filename": original_filename, "error": "Could not read this file."})
+                    continue
+
+                tags = read_result["tags"]
+
+                query = build_query(
+                    filename=original_filename,
+                    artist=tags.get("artist"),
+                    title=tags.get("title"),
+                    album=tags.get("album"),
+                )
+
+                if not query:
+                    skipped.append({"filename": original_filename, "reason": "Not enough info to search automatically."})
+                    file_obj.seek(0)
+                    zip_file.writestr(original_filename, file_obj.read())
+                    continue
+
+                matches = search_recording(query)
+
+                if not matches:
+                    skipped.append({"filename": original_filename, "reason": "No matches found."})
+                    file_obj.seek(0)
+                    zip_file.writestr(original_filename, file_obj.read())
+                    continue
+
+                best_match = matches[0]
+
+                title = best_match.get("title")
+                artist = best_match.get("artist")
+                album = best_match.get("album")
+                cover_art_url = best_match.get("cover_art_url")
+
+                file_obj.seek(0)
+                file_bytes = file_obj.read()
+                buffer = io.BytesIO(file_bytes)
+
+                cover_art_bytes, cover_mime = download_cover_art(cover_art_url)
+
+                result = apply_tags(
+                    buffer,
+                    original_filename,
+                    title=title,
+                    artist=artist,
+                    album=album,
+                    cover_art_bytes=cover_art_bytes,
+                    cover_mime=cover_mime,
+                )
+
+                if result is None:
+                    errors.append({"filename": original_filename, "error": "Could not process this file."})
+                    continue
+
+                extension = original_filename.split(".")[-1]
+                new_filename = sanitize_filename(f"{artist} - {title}.{extension}")
+
+                result.seek(0)
+                zip_file.writestr(new_filename, result.read())
+
+            except Exception as exc:
+                errors.append({"filename": original_filename, "error": str(exc)})
+
+    zip_buffer.seek(0)
+
+    response = FileResponse(zip_buffer, as_attachment=True, filename="auto_fixed_music.zip")
+    response["X-Batch-Errors"] = json.dumps(errors)
+    response["X-Batch-Skipped"] = json.dumps(skipped)
+    return response
