@@ -43,7 +43,6 @@ def search_release(query):
 
     return matches
 
-
 def get_cover_art_url(release_id):
     if not release_id:
         return None
@@ -69,3 +68,25 @@ def get_cover_art_url(release_id):
         return images[0].get("image")
 
     return None
+
+def search_recording_freetext(text):
+    result = musicbrainzngs.search_recordings(query=text, limit=5)
+    recordings = result.get("recording-list", [])
+
+    matches = []
+    for rec in recordings:
+        artist = rec.get("artist-credit-phrase")
+        release = rec.get("release-list", [{}])[0]
+        release_id = release.get("id")
+
+        matches.append({
+            "mbid": rec.get("id"),
+            "title": rec.get("title"),
+            "artist": artist,
+            "album": release.get("title"),
+            "release_id": release_id,
+            "score": rec.get("ext:score"),
+            "cover_art_url": get_cover_art_url(release_id),
+        })
+
+    return matches

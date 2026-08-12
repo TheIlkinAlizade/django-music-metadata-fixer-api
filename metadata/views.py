@@ -5,7 +5,7 @@ from rest_framework.response import Response
 from rest_framework import status
 
 from .services import read_tags, build_query, apply_tags, download_cover_art, parse_filename
-from .musicbrainz import search_recording, search_release
+from .musicbrainz import search_recording, search_release, search_recording_freetext
 
 import base64
 import json
@@ -147,14 +147,25 @@ def auto_search(request):
         )
 
     search_type = request.data.get("search_type", "track")
+
+    attempted_queries = [query]
     matches = search_release(query) if search_type == "album" else search_recording(query)
 
     if not matches and "(" in query:
-        fallback_query = re.sub(r"\([^)]*\)", "", query).strip()
-        if fallback_query != query:
-            matches = search_recording(fallback_query)
+        stripped = re.sub(r"\([^)]*\)", "", query).strip()
+
+    if not matches:
+        raw_text = filename
+        raw_text = re.sub(r"\.\w+$", "", raw_text)
+        raw_text = re.sub(r"\([^)]*\)", "", raw_text)
+        raw_text = re.sub(r"\[[^\]]*\]", "", raw_text)
+        raw_text = raw_text.strip(" -_")
+
+        if raw_text:
+            attempted_queries.append(raw_text)
+            matches = search_recording_freetext(raw_text)
             if matches:
-                query = fallback_query
+                query = raw_text
 
     if not matches and not (tags.get("artist") and tags.get("title")):
         parsed = parse_filename(filename)
