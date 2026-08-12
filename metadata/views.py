@@ -5,7 +5,7 @@ from rest_framework.response import Response
 from rest_framework import status
 
 from .services import read_tags, build_query, apply_tags, download_cover_art, parse_filename
-from .musicbrainz import search_recording, search_release, search_recording_freetext
+from .musicbrainz import search_recording, search_release, search_recording_freetext, get_cover_art_url
 
 import base64
 import json
@@ -37,6 +37,11 @@ def read_metadata(request):
 @api_view(["POST"])
 def search_metadata(request):
     data = request.data
+    free_text = data.get("free_text")
+
+    if free_text:
+        matches = search_recording_freetext(free_text.strip())
+        return Response({"query_used": free_text.strip(), "matches": matches}, status=status.HTTP_200_OK)
 
     query = build_query(
         filename=data.get("filename"),
@@ -49,16 +54,12 @@ def search_metadata(request):
 
     if not query:
         return Response(
-            {"error": "Not enough information to search. Provide a filename, tags, or free_text."},
+            {"error": "Not enough info. Provide a filename, tags, manual_artist/manual_title, or free_text."},
             status=status.HTTP_400_BAD_REQUEST,
         )
 
     search_type = data.get("search_type", "track")
-
-    if search_type == "album":
-        matches = search_release(query)
-    else:
-        matches = search_recording(query)
+    matches = search_release(query) if search_type == "album" else search_recording(query)
 
     return Response({"query_used": query, "matches": matches}, status=status.HTTP_200_OK)
 
@@ -515,3 +516,8 @@ def batch_auto_fix(request):
     response["X-Batch-Errors"] = json.dumps(errors)
     response["X-Batch-Skipped"] = json.dumps(skipped)
     return response
+
+@api_view(["GET"])
+def get_cover_art(request, release_id):
+    url = get_cover_art_url(release_id)
+    return Response({"cover_art_url": url}, status=status.HTTP_200_OK)
