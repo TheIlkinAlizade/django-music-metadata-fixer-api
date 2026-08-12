@@ -58,7 +58,8 @@ def search_metadata(request):
         )
 
     search_type = data.get("search_type", "track")
-    matches = search_release(query) if search_type == "album" else search_recording(query)
+    result_limit = 20 if (data.get("manual_artist") and not data.get("manual_title")) else 5
+    matches = search_release(query) if search_type == "album" else search_recording(query, fetch_covers=False, limit=result_limit)
 
     return Response({"query_used": query, "matches": matches}, status=status.HTTP_200_OK)
 
@@ -66,6 +67,7 @@ def search_metadata(request):
 @api_view(["POST"])
 def apply_metadata(request):
     file_obj = request.FILES.get("file")
+    cover_art_file = request.FILES.get("cover_art_file")
 
     if file_obj is None:
         return Response(
@@ -83,17 +85,15 @@ def apply_metadata(request):
     file_bytes = file_obj.read()
     buffer = io.BytesIO(file_bytes)
 
-    cover_art_bytes, cover_mime = download_cover_art(cover_art_url)
+    if cover_art_file:
+        cover_art_bytes = cover_art_file.read()
+        cover_mime = cover_art_file.content_type or "image/jpeg"
+    else:
+        cover_art_bytes, cover_mime = download_cover_art(cover_art_url)
 
     result = apply_tags(
-        buffer,
-        filename,
-        title=title,
-        artist=artist,
-        album=album,
-        date=date,
-        cover_art_bytes=cover_art_bytes,
-        cover_mime=cover_mime,
+        buffer, filename, title=title, artist=artist, album=album, date=date,
+        cover_art_bytes=cover_art_bytes, cover_mime=cover_mime,
     )
 
     if result is None:

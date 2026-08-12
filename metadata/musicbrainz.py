@@ -4,8 +4,8 @@ import requests
 musicbrainzngs.set_useragent("music-metadata-fixer", "1.0", "your-email@example.com")
 
 
-def search_recording(query, fetch_covers=False):
-    result = musicbrainzngs.search_recordings(query=query, limit=5)
+def search_recording(query, fetch_covers=False, limit=5):
+    result = musicbrainzngs.search_recordings(query=query, limit=limit)
     recordings = result.get("recording-list", [])
 
     matches = []

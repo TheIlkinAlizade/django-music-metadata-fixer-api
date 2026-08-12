@@ -51,6 +51,9 @@ def build_query(filename=None, artist=None, title=None, album=None, manual_artis
     if manual_artist and manual_title:
         return f'artist:"{manual_artist}" AND recording:"{manual_title}"'
 
+    if manual_artist:
+        return f'artist:"{manual_artist}"'
+
     if manual_title:
         return f'recording:"{manual_title}"'
 
