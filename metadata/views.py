@@ -7,14 +7,13 @@ from rest_framework import status
 from .services import read_tags, build_query, apply_tags, download_cover_art, parse_filename
 from .musicbrainz import search_recording, search_release, search_recording_freetext, get_cover_art_url
 
-import base64
 import json
 import zipfile
 import re
 
 
 @api_view(["POST"])
-def read_metadata(request): 
+def read_metadata(request):
     file_obj = request.FILES.get("file")
 
     if file_obj is None:
@@ -107,7 +106,6 @@ def apply_metadata(request):
     return FileResponse(result, as_attachment=True, filename=filename)
 
 
-
 @api_view(["POST"])
 def auto_search(request):
     file_obj = request.FILES.get("file")
@@ -154,6 +152,11 @@ def auto_search(request):
 
     if not matches and "(" in query:
         stripped = re.sub(r"\([^)]*\)", "", query).strip()
+        if stripped != query:
+            attempted_queries.append(stripped)
+            matches = search_recording(stripped)
+            if matches:
+                query = stripped
 
     if not matches:
         raw_text = filename
@@ -172,6 +175,7 @@ def auto_search(request):
         parsed = parse_filename(filename)
         if parsed["artist"] and parsed["title"]:
             swapped_query = f'artist:"{parsed["title"]}" AND recording:"{parsed["artist"]}"'
+            attempted_queries.append(swapped_query)
             matches = search_recording(swapped_query)
             if matches:
                 query = swapped_query
@@ -248,7 +252,6 @@ def batch_auto_search(request):
             })
 
     return Response({"results": results}, status=status.HTTP_200_OK)
-
 
 
 def sanitize_filename(name):
@@ -341,89 +344,6 @@ def batch_apply(request):
     response = FileResponse(zip_buffer, as_attachment=True, filename="fixed_music.zip")
     response["X-Batch-Errors"] = json.dumps(errors)
     return response
-    files = request.FILES.getlist("files")
-    metadata_json = request.data.get("metadata")
-
-    if not files:
-        return Response(
-            {"error": "No files provided. Send them as multipart/form-data under the 'files' key (multiple allowed)."},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
-
-    if not metadata_json:
-        return Response(
-            {"error": "Missing 'metadata' field. Send a JSON array with one entry per file, in the same order."},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
-
-    try:
-        metadata_list = json.loads(metadata_json)
-    except (json.JSONDecodeError, TypeError):
-        return Response(
-            {"error": "'metadata' must be a valid JSON array."},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
-
-    if len(metadata_list) != len(files):
-        return Response(
-            {"error": f"Got {len(files)} files but {len(metadata_list)} metadata entries. They must match 1:1, in order."},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
-
-    results = []
-
-    for file_obj, meta in zip(files, metadata_list):
-        filename = file_obj.name
-
-        try:
-            title = meta.get("title")
-            artist = meta.get("artist")
-            album = meta.get("album")
-            date = meta.get("date")
-            cover_art_url = meta.get("cover_art_url")
-
-            file_bytes = file_obj.read()
-            buffer = io.BytesIO(file_bytes)
-
-            cover_art_bytes, cover_mime = download_cover_art(cover_art_url)
-
-            result = apply_tags(
-                buffer,
-                filename,
-                title=title,
-                artist=artist,
-                album=album,
-                date=date,
-                cover_art_bytes=cover_art_bytes,
-                cover_mime=cover_mime,
-            )
-
-            if result is None:
-                results.append({
-                    "filename": filename,
-                    "status": "error",
-                    "error": "Could not process this file. It may be corrupted or an unsupported format.",
-                })
-                continue
-
-            result.seek(0)
-            encoded = base64.b64encode(result.read()).decode("utf-8")
-
-            results.append({
-                "filename": filename,
-                "status": "ok",
-                "file_base64": encoded,
-            })
-
-        except Exception as exc:
-            results.append({
-                "filename": filename,
-                "status": "error",
-                "error": str(exc),
-            })
-
-    return Response({"results": results}, status=status.HTTP_200_OK)
-
 
 
 @api_view(["POST"])
@@ -466,7 +386,30 @@ def batch_auto_fix(request):
                     zip_file.writestr(original_filename, file_obj.read())
                     continue
 
-                matches = search_recording(query)
+                matches = search_recording(query, fetch_covers=True)
+
+                if not matches and "(" in query:
+                    stripped = re.sub(r"\([^)]*\)", "", query).strip()
+                    if stripped != query:
+                        matches = search_recording(stripped, fetch_covers=True)
+                        if matches:
+                            query = stripped
+
+                if not matches:
+                    raw_text = re.sub(r"\.\w+$", "", original_filename)
+                    raw_text = re.sub(r"\([^)]*\)", "", raw_text)
+                    raw_text = re.sub(r"\[[^\]]*\]", "", raw_text)
+                    raw_text = raw_text.strip(" -_")
+                    if raw_text:
+                        matches = search_recording_freetext(raw_text, fetch_covers=True)
+                        if matches:
+                            query = raw_text
+
+                if not matches:
+                    parsed = parse_filename(original_filename)
+                    if parsed["artist"] and parsed["title"]:
+                        swapped_query = f'artist:"{parsed["title"]}" AND recording:"{parsed["artist"]}"'
+                        matches = search_recording(swapped_query, fetch_covers=True)
 
                 if not matches:
                     skipped.append({"filename": original_filename, "reason": "No matches found."})
@@ -516,6 +459,7 @@ def batch_auto_fix(request):
     response["X-Batch-Errors"] = json.dumps(errors)
     response["X-Batch-Skipped"] = json.dumps(skipped)
     return response
+
 
 @api_view(["GET"])
 def get_cover_art(request, release_id):
